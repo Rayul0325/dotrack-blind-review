@@ -37,6 +37,10 @@
     h1 { margin: 0; font-size: clamp(1.8rem, 4.5vw, 3.1rem); letter-spacing: -.055em; line-height: 1.14; }
     .intro { color: var(--muted); margin: 10px 0 0; line-height: 1.55; }
     .preview { display: inline-block; margin: 12px 0 0; padding: 5px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--muted); font-size: .84rem; }
+    .transfer { margin-top: 14px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+    .transfer summary { cursor: pointer; font-weight: 750; }
+    .transfer summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+    .transfer .actions { margin-top: 10px; }
     .layout { display: grid; grid-template-columns: minmax(300px, 1.25fr) minmax(275px, 1fr); gap: 24px; align-items: start; }
     .layout.ranking-mode { grid-template-columns: minmax(0, 1fr); }
     .screen { background: var(--well); border-radius: 16px; padding: 14px 16px 16px; }
@@ -106,6 +110,16 @@
       <h1>쇼츠 블라인드 테스트</h1>
       <p class="intro">쇼츠를 한 편씩 보고 별점을 남겨 주세요. 전체 순위를 확정한 뒤 평가 파일을 진행자에게 보내 주세요.</p>
       <p class="preview" id="preview" hidden></p>
+      <details class="transfer">
+        <summary>다른 기기에서 이어하기</summary>
+        <p class="hint">이동용 파일에는 내 평가를 여는 키가 들어 있습니다. 본인 기기 사이에서만 옮겨 주세요.</p>
+        <div class="actions">
+          <button class="action secondary" id="export-progress" type="button">이어하기 파일 내보내기</button>
+          <button class="action secondary" id="import-progress" type="button">이어하기 파일 가져오기</button>
+        </div>
+        <input type="file" id="progress-file" accept=".json,application/json" hidden>
+        <p class="hint" id="transfer-status" role="status"></p>
+      </details>
     </header>
     <div class="layout" id="review-layout">
       <section class="screen" id="main-screen" aria-labelledby="screen-title">
@@ -162,6 +176,7 @@
           <div class="actions">
             <button class="action secondary" id="download" type="button">평가 JSON 다운로드</button>
             <button class="action secondary" id="copy" type="button">평가 복사</button>
+            <button class="action secondary" id="copy-with-answers" type="button" hidden>정답 포함 복사</button>
             <button class="action secondary" id="edit" type="button">순위 수정</button>
           </div>
           <p class="hint" id="copy-status" role="status"></p>
@@ -212,6 +227,7 @@
       : Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
     let completedAt = typeof stored?.completed_at === "string" ? stored.completed_at : null;
     let accepted = hosted && phase === "complete" && Boolean(stored?.accepted);
+    let revealedAnswers = null;
     const nickname = byId("nickname");
     nickname.value = typeof stored?.nickname === "string" ? stored.nickname : "";
 
@@ -237,14 +253,83 @@
       byId("scale").append(option);
     }
 
-    function persist() {
-      try {
-        localStorage.setItem(key, JSON.stringify({
-          reviews, selected, phase, order, submission_id: submissionId, completed_at: completedAt,
-          submission_key: submissionKey, nickname: nickname.value, accepted,
-        }));
-      } catch {}
+    function snapshot() {
+      return {
+        reviews, selected, phase, order, submission_id: submissionId, completed_at: completedAt,
+        submission_key: submissionKey, nickname: nickname.value, accepted,
+      };
     }
+
+    function persist() {
+      try { localStorage.setItem(key, JSON.stringify(snapshot())); } catch {}
+    }
+
+    function downloadJson(name, value) {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2) + "\n"], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function validProgress(transfer) {
+      if (transfer?.type !== "dotrack-device-transfer" || transfer.schema_version !== 1 || transfer.review_id !== review_id) return false;
+      const progress = transfer.progress;
+      if (!progress || !Array.isArray(progress.reviews) || progress.reviews.length !== entries.length) return false;
+      if (!Number.isInteger(progress.selected) || !entries[progress.selected] || !["review", "ranking", "complete"].includes(progress.phase)) return false;
+      if (typeof progress.submission_id !== "string" || !/^[\da-f]{24}$/.test(progress.submission_id)) return false;
+      if (typeof progress.submission_key !== "string" || !/^[\da-f]{48}$/.test(progress.submission_key)) return false;
+      if (typeof progress.nickname !== "string" || progress.nickname.length > 32 || typeof progress.accepted !== "boolean") return false;
+      if (!progress.reviews.every(review => review && (
+        review.score === null || Number.isInteger(review.score) && review.score >= 1 && review.score <= 5
+      ) && (review.guess === "" || models.includes(review.guess))
+        && (review.harness === "" || harnesses.includes(review.harness))
+        && typeof review.note === "string" && review.note.length <= 150)) return false;
+      const hasOrder = Array.isArray(progress.order) && progress.order.length === entries.length
+        && indices.every(index => progress.order.includes(index));
+      if (progress.order !== null && !hasOrder) return false;
+      if (progress.phase !== "review" && (!hasOrder || !progress.reviews.every(review => review.score))) return false;
+      return !progress.accepted || (progress.phase === "complete" && Boolean(progress.nickname.trim()));
+    }
+
+    byId("export-progress").addEventListener("click", () => {
+      downloadJson("DOTRACK-이어하기-개인용.json", {
+        type: "dotrack-device-transfer", schema_version: 1, review_id, progress: snapshot(),
+      });
+      byId("transfer-status").textContent = "이 파일을 내 다른 기기로 옮겨 가져오면 이어서 볼 수 있습니다.";
+    });
+    const progressFile = byId("progress-file");
+    byId("import-progress").addEventListener("click", () => progressFile.click());
+    progressFile.addEventListener("change", async () => {
+      const file = progressFile.files[0];
+      if (!file) return;
+      const status = byId("transfer-status");
+      try {
+        if (file.size > 65536) throw new Error("Invalid file size");
+        const transfer = JSON.parse(await file.text());
+        if (!validProgress(transfer)) throw new Error("Invalid progress");
+        if (JSON.stringify(transfer.progress) === JSON.stringify(snapshot())) {
+          status.textContent = "이 기기에 같은 평가가 이미 있습니다.";
+          return;
+        }
+        if ((reviews.some(review => review.score || review.guess || review.harness || review.note) || nickname.value.trim()) &&
+            !window.confirm("이 기기의 평가를 가져온 파일의 평가로 바꿀까요?")) return;
+        try {
+          localStorage.setItem(key, JSON.stringify(transfer.progress));
+        } catch {
+          status.textContent = "이 브라우저에 평가를 저장할 수 없습니다.";
+          return;
+        }
+        location.reload();
+      } catch {
+        status.textContent = "이 평가 페이지에서 내보낸 개인용 이어하기 파일을 선택해 주세요.";
+      } finally {
+        progressFile.value = "";
+      }
+    });
 
     function updateProgress() {
       byId("progress").textContent = `평가 ${reviews.filter(review => review.score).length}/${entries.length}`;
@@ -266,6 +351,7 @@
       byId("nickname-field").hidden = accepted;
       byId("privacy-note").hidden = accepted;
       byId("edit").hidden = accepted;
+      byId("copy-with-answers").hidden = !revealedAnswers;
       byId("send-review").textContent = accepted ? "내 평가 보기" : "평가 제출";
       byId("current").textContent = letter;
       player.setAttribute("aria-label", `영상 ${letter}`);
@@ -410,15 +496,7 @@
 
     byId("download").addEventListener("click", () => {
       if (phase !== "complete") return;
-      const file = new Blob([JSON.stringify(submission(), null, 2) + "\n"], { type: "application/json" });
-      const url = URL.createObjectURL(file);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `DOTRACK-평가-${submissionId}.json`;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadJson(`DOTRACK-평가-${submissionId}.json`, submission());
     });
 
     nickname.addEventListener("input", persist);
@@ -453,6 +531,7 @@
         });
         nickname.value = own.nickname;
         accepted = true;
+        revealedAnswers = answerByLetter;
         renderStep();
         renderPersonalReview(answerByLetter);
         status.textContent = alreadyAccepted ? "내 평가를 불러왔습니다." : "평가가 저장됐습니다.";
@@ -505,14 +584,16 @@
       area.hidden = false;
     }
 
-    byId("copy").addEventListener("click", async () => {
+    async function copyReview(withAnswers) {
+      if (phase !== "complete" || (withAnswers && !revealedAnswers)) return;
       const lines = order.map((index, rank) => {
         const { letter } = entries[index];
         const review = reviews[index];
         const prediction = [review.harness, review.guess].filter(Boolean).join(" / ");
-        return `${rank + 1}위 ${letter} · ★ ${review.score}/5${prediction ? ` · 예상 ${prediction}` : ""}${review.note ? ` · ${review.note}` : ""}`;
+        const answer = withAnswers ? revealedAnswers.get(letter) : null;
+        return `${rank + 1}위 ${letter}${answer ? ` · ${answer.app} · ${answer.model}` : ""} · ★ ${review.score}/5${prediction ? ` · 예상 ${prediction}` : ""}${review.note ? ` · ${review.note}` : ""}`;
       });
-      const text = ["DOTRACK 블라인드 평가", ...lines].join("\n");
+      const text = [withAnswers ? "DOTRACK 평가 · 정답 포함" : "DOTRACK 블라인드 평가", ...lines].join("\n");
       const field = byId("copy-fallback");
       try {
         await navigator.clipboard.writeText(text);
@@ -524,7 +605,9 @@
         field.select();
         byId("copy-status").textContent = "선택된 평가를 복사해 주세요.";
       }
-    });
+    }
+    byId("copy").addEventListener("click", () => copyReview(false));
+    byId("copy-with-answers").addEventListener("click", () => copyReview(true));
 
     byId("edit").addEventListener("click", () => {
       if (accepted) return;
