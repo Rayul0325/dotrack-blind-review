@@ -154,21 +154,19 @@
               <span class="field-label">별명</span>
               <input type="text" id="nickname" maxlength="32" autocomplete="nickname">
             </label>
-            <p class="intro" id="privacy-note">제출하면 별명과 평가를 진행자에게 저장하고, 참가자에게는 전체 집계만 공개합니다.</p>
+            <p class="intro" id="privacy-note">제출하면 별명과 평가를 진행자에게 저장합니다. 제출 후에는 내 평가와 각 영상의 정답을 볼 수 있습니다.</p>
             <div class="actions"><button class="action primary" id="send-review" type="button">평가 제출</button></div>
             <p class="hint" id="send-status" role="status"></p>
           </div>
           <p class="intro" id="offline-note">다운로드한 JSON 파일을 Discord에서 진행자에게 보내 주세요.</p>
           <div class="actions">
             <button class="action secondary" id="download" type="button">평가 JSON 다운로드</button>
-            <button class="action secondary" id="reveal" type="button" aria-expanded="false" aria-controls="answers" hidden>내 예상 결과</button>
             <button class="action secondary" id="copy" type="button">평가 복사</button>
             <button class="action secondary" id="edit" type="button">순위 수정</button>
           </div>
           <p class="hint" id="copy-status" role="status"></p>
           <textarea id="copy-fallback" aria-label="복사할 평가" readonly hidden></textarea>
-          <section class="answers" id="aggregate" aria-label="전체 평가 결과" hidden></section>
-          <div class="answers" id="answers" hidden></div>
+          <section class="answers" id="answers" aria-label="내 평가 결과" hidden></section>
         </div>
       </section>
     </div>
@@ -214,7 +212,6 @@
       : Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
     let completedAt = typeof stored?.completed_at === "string" ? stored.completed_at : null;
     let accepted = hosted && phase === "complete" && Boolean(stored?.accepted);
-    let answerByLetter;
     const nickname = byId("nickname");
     nickname.value = typeof stored?.nickname === "string" ? stored.nickname : "";
 
@@ -269,8 +266,7 @@
       byId("nickname-field").hidden = accepted;
       byId("privacy-note").hidden = accepted;
       byId("edit").hidden = accepted;
-      byId("send-review").textContent = accepted ? "집계 새로고침" : "평가 제출";
-      byId("reveal").hidden = !answerByLetter;
+      byId("send-review").textContent = accepted ? "내 평가 보기" : "평가 제출";
       byId("current").textContent = letter;
       player.setAttribute("aria-label", `영상 ${letter}`);
       const src = `video/${letter}.mp4`;
@@ -394,13 +390,6 @@
       renderStep();
     });
 
-    function hideAnswers() {
-      byId("answers").replaceChildren();
-      byId("answers").hidden = true;
-      byId("reveal").setAttribute("aria-expanded", "false");
-      byId("reveal").textContent = "내 예상 결과";
-    }
-
     function submission() {
       return {
         schema_version: 1,
@@ -432,36 +421,6 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
 
-    function renderAggregate(result) {
-      const area = byId("aggregate");
-      const title = document.createElement("h2");
-      title.textContent = `전체 평가 결과 · ${result.submissions}명`;
-      const table = document.createElement("table");
-      const head = table.createTHead().insertRow();
-      for (const label of ["순위", "영상 · 정답", "평균 별점", "평균 순위"]) {
-        const cell = document.createElement("th");
-        cell.scope = "col";
-        cell.textContent = label;
-        head.append(cell);
-      }
-      const body = table.createTBody();
-      result.results.forEach((entry, index) => {
-        const answer = answerByLetter.get(entry.video);
-        const row = body.insertRow();
-        row.insertCell().textContent = index + 1;
-        const video = row.insertCell();
-        video.textContent = entry.video;
-        const modelLabel = document.createElement("span");
-        modelLabel.className = "note-text";
-        modelLabel.textContent = `${answer.app} · ${answer.model}`;
-        video.append(modelLabel);
-        row.insertCell().textContent = entry.average_stars.toFixed(2);
-        row.insertCell().textContent = entry.average_rank.toFixed(2);
-      });
-      area.replaceChildren(title, table);
-      area.hidden = false;
-    }
-
     nickname.addEventListener("input", persist);
     byId("send-review").addEventListener("click", async () => {
       if (phase !== "complete" || !hosted) return;
@@ -472,7 +431,8 @@
         nickname.focus();
         return;
       }
-      status.textContent = accepted ? "집계를 불러오는 중…" : "평가를 저장하는 중…";
+      const alreadyAccepted = accepted;
+      status.textContent = alreadyAccepted ? "내 평가를 불러오는 중…" : "평가를 저장하는 중…";
       button.disabled = true;
       byId("edit").disabled = true;
       try {
@@ -484,7 +444,7 @@
         if (!response.ok) throw new Error("Submission failed");
         const result = await response.json();
         const own = result.own_review;
-        answerByLetter = new Map(result.entries.map(entry => [entry.letter, entry]));
+        const answerByLetter = new Map(result.entries.map(entry => [entry.letter, entry]));
         const indexByLetter = new Map(entries.map(({ letter }, index) => [letter, index]));
         order = own.ratings.map(entry => {
           const index = indexByLetter.get(entry.video);
@@ -494,8 +454,8 @@
         nickname.value = own.nickname;
         accepted = true;
         renderStep();
-        renderAggregate(result);
-        status.textContent = "평가가 저장됐습니다.";
+        renderPersonalReview(answerByLetter);
+        status.textContent = alreadyAccepted ? "내 평가를 불러왔습니다." : "평가가 저장됐습니다.";
       } catch {
         status.textContent = "평가 서버에 연결하지 못했습니다. 다시 시도하거나 JSON을 내려받아 주세요.";
       } finally {
@@ -504,14 +464,10 @@
       }
     });
 
-    byId("reveal").addEventListener("click", () => {
+    function renderPersonalReview(answerByLetter) {
       const area = byId("answers");
-      const button = byId("reveal");
-      if (phase !== "complete" || !answerByLetter) return;
-      if (!area.hidden) {
-        hideAnswers();
-        return;
-      }
+      const title = document.createElement("h2");
+      title.textContent = "내 평가와 정답";
       const table = document.createElement("table");
       const head = table.createTHead().insertRow();
       for (const name of ["순위", "별점", "정답 · 내 평가"]) {
@@ -545,11 +501,9 @@
           item.append(text);
         }
       });
-      area.append(table);
+      area.replaceChildren(title, table);
       area.hidden = false;
-      button.setAttribute("aria-expanded", "true");
-      button.textContent = "내 예상 결과 숨기기";
-    });
+    }
 
     byId("copy").addEventListener("click", async () => {
       const lines = order.map((index, rank) => {
@@ -575,7 +529,6 @@
     byId("edit").addEventListener("click", () => {
       if (accepted) return;
       phase = "ranking";
-      hideAnswers();
       byId("copy-status").textContent = "";
       byId("copy-fallback").hidden = true;
       renderStep();
