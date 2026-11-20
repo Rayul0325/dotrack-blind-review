@@ -122,6 +122,10 @@
             <select id="guess"><option value="">모르겠어요</option></select>
           </label>
           <label class="note-field">
+            <span class="field-label">예상 하네스</span>
+            <select id="harness"><option value="">모르겠어요</option></select>
+          </label>
+          <label class="note-field">
             <span class="field-label">한 줄 코멘트 <span class="hint">선택</span></span>
             <input type="text" id="note" maxlength="150" autocomplete="off">
           </label>
@@ -163,15 +167,23 @@
     const form = byId("review");
     const note = byId("note");
     const guess = byId("guess");
+    const harness = byId("harness");
+    const harnesses = ["Cursor", "Codex", "Dryforge"];
     const key = `dotrack-rank-review:${review_id}`;
     const indices = entries.map((_, index) => index);
     for (const model of models) guess.add(new Option(model, model));
+    for (const name of harnesses) harness.add(new Option(name, name));
     let stored;
     try { stored = JSON.parse(localStorage.getItem(key)); } catch {}
     const reviews = entries.map((_, index) => {
       const value = stored?.reviews?.[index];
       const score = Number.isInteger(value?.score) && value.score >= 1 && value.score <= 5 ? value.score : null;
-      return { score, guess: models.includes(value?.guess) ? value.guess : "", note: typeof value?.note === "string" ? value.note.slice(0, 150) : "" };
+      return {
+        score,
+        guess: models.includes(value?.guess) ? value.guess : "",
+        harness: harnesses.includes(value?.harness) ? value.harness : "",
+        note: typeof value?.note === "string" ? value.note.slice(0, 150) : "",
+      };
     });
     let selected = Number.isInteger(stored?.selected) && entries[stored.selected] ? stored.selected : 0;
     let order = Array.isArray(stored?.order) && stored.order.length === indices.length && indices.every(i => stored.order.includes(i)) ? stored.order : null;
@@ -234,6 +246,7 @@
       }
       note.value = reviews[selected].note;
       guess.value = reviews[selected].guess;
+      harness.value = reviews[selected].harness;
       byId("previous").disabled = selected === 0;
       byId("next").textContent = selected === entries.length - 1 ? "순위 매기기" : "저장하고 다음";
       if (phase === "ranking") renderRanking();
@@ -242,7 +255,10 @@
     }
 
     function recordInput() {
-      reviews[selected] = { score: Number(form.elements.score.value) || null, guess: guess.value, note: note.value.trim() };
+      reviews[selected] = {
+        score: Number(form.elements.score.value) || null,
+        guess: guess.value, harness: harness.value, note: note.value.trim(),
+      };
       persist();
       updateProgress();
     }
@@ -333,6 +349,7 @@
           rank: rank + 1,
           stars: reviews[index].score,
           guess: reviews[index].guess || null,
+          guess_harness: reviews[index].harness || null,
           comment: reviews[index].note || null,
         })),
       };
@@ -401,7 +418,11 @@
         item.textContent = `${app} · ${model}`;
         const prediction = document.createElement("span");
         prediction.className = "note-text";
-        prediction.textContent = review.guess ? `예상 ${review.guess} · ${review.guess === model ? "적중" : "다름"}` : "예상 건너뜀";
+        const predictions = [
+          review.guess && `예상 모델 ${review.guess} · ${review.guess === model ? "적중" : "다름"}`,
+          review.harness && `예상 하네스 ${review.harness} · ${review.harness === app ? "적중" : "다름"}`,
+        ].filter(Boolean);
+        prediction.textContent = predictions.join(" / ") || "예상 건너뜀";
         item.append(prediction);
         if (review.note) {
           const text = document.createElement("span");
@@ -421,7 +442,8 @@
       const lines = order.map((index, rank) => {
         const { letter } = entries[index];
         const review = reviews[index];
-        return `${rank + 1}위 ${letter} · ★ ${review.score}/5${review.guess ? ` · 예상 ${review.guess}` : ""}${review.note ? ` · ${review.note}` : ""}`;
+        const prediction = [review.harness, review.guess].filter(Boolean).join(" / ");
+        return `${rank + 1}위 ${letter} · ★ ${review.score}/5${prediction ? ` · 예상 ${prediction}` : ""}${review.note ? ` · ${review.note}` : ""}`;
       });
       const text = ["DOTRACK 블라인드 평가", ...lines].join("\n");
       const field = byId("copy-fallback");
