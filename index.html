@@ -38,6 +38,7 @@
     .intro { color: var(--muted); margin: 10px 0 0; line-height: 1.55; }
     .preview { display: inline-block; margin: 12px 0 0; padding: 5px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--muted); font-size: .84rem; }
     .layout { display: grid; grid-template-columns: minmax(300px, 1.25fr) minmax(275px, 1fr); gap: 24px; align-items: start; }
+    .layout.ranking-mode { grid-template-columns: minmax(0, 1fr); }
     .screen { background: var(--well); border-radius: 16px; padding: 14px 16px 16px; }
     .screen-title { margin: 0 0 10px; color: #f2f5fb; display: flex; align-items: center; gap: 9px; font-weight: 700; }
     .screen-title .clip { border: 1px solid #63708a; padding: 2px 7px; border-radius: 4px; min-width: 27px; text-align: center; }
@@ -66,8 +67,11 @@
     }
     .score-option label { color: #76520e; font-size: 1.02rem; }
     .rank-list { list-style: none; padding: 0; margin: 14px 0 0; }
-    .rank-row { display: grid; grid-template-columns: auto 1fr 80px; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
-    .rank-row select { padding: 6px; }
+    .rank-row { display: grid; grid-template-columns: minmax(0, 230px) minmax(0, 1fr); gap: 22px; align-items: center; padding: 15px 0; border-bottom: 1px solid var(--line); }
+    .rank-video { width: 100%; height: auto; }
+    .rank-controls { display: grid; gap: 12px; align-content: start; }
+    .rank-controls select { min-width: 0; max-width: 150px; padding: 6px; }
+    .rank-controls label { display: grid; gap: 6px; }
     .rank-number { color: var(--muted); min-width: 2.2em; }
     .rank-label small { display: block; color: #76520e; }
     textarea { min-height: 130px; }
@@ -90,6 +94,8 @@
       .screen { padding: 12px; }
       .panel { padding: 16px; }
       video { height: min(60svh, 490px); }
+      .rank-row { grid-template-columns: minmax(0, 58%) minmax(0, 1fr); gap: 10px; }
+      .rank-video { height: auto; }
     }
   </style>
 </head>
@@ -101,8 +107,8 @@
       <p class="intro">쇼츠를 한 편씩 보고 별점을 남겨 주세요. 전체 순위를 확정한 뒤 평가 파일을 진행자에게 보내 주세요.</p>
       <p class="preview" id="preview" hidden></p>
     </header>
-    <div class="layout">
-      <section class="screen" aria-labelledby="screen-title">
+    <div class="layout" id="review-layout">
+      <section class="screen" id="main-screen" aria-labelledby="screen-title">
         <p class="screen-title" id="screen-title"><span>영상</span><span class="clip" id="current">A</span></p>
         <video id="player" aria-label="영상 A" controls playsinline preload="metadata"></video>
         <p class="error" id="playback-error" role="status" hidden>영상을 불러오지 못했습니다. 페이지를 새로고침해 주세요.</p>
@@ -135,7 +141,7 @@
           </div>
         </form>
         <div class="ranking" id="ranking" hidden>
-          <p class="intro">별점순으로 정렬했어요. 각 영상 오른쪽에서 원하는 순위를 골라 바꿀 수 있습니다.</p>
+          <p class="intro">별점순으로 정렬했어요. 각 행에서 영상을 재생하고 순위를 바꿀 수 있습니다.</p>
           <ol class="rank-list" id="rank-list"></ol>
           <div class="actions">
             <button class="action secondary" id="back-review" type="button">평가 수정</button>
@@ -173,6 +179,7 @@
     const byId = id => document.getElementById(id);
     const { entries, total, preview, review_id, models } = JSON.parse(byId("data").textContent);
     const player = byId("player");
+    const rankRows = new Map();
     const form = byId("review");
     const note = byId("note");
     const guess = byId("guess");
@@ -248,6 +255,11 @@
 
     function renderStep() {
       const { letter } = entries[selected];
+      const ranking = phase === "ranking";
+      byId("review-layout").classList.toggle("ranking-mode", ranking);
+      byId("main-screen").hidden = ranking;
+      if (ranking) player.pause();
+      else for (const row of rankRows.values()) row.clip.pause();
       byId("panel-title").textContent = { review: `영상 ${letter} 평가`, ranking: "전체 순위", complete: "평가 완료" }[phase];
       form.hidden = phase !== "review";
       byId("ranking").hidden = phase !== "ranking";
@@ -262,7 +274,7 @@
       byId("current").textContent = letter;
       player.setAttribute("aria-label", `영상 ${letter}`);
       const src = `video/${letter}.mp4`;
-      if (player.getAttribute("src") !== src) {
+      if (!ranking && player.getAttribute("src") !== src) {
         byId("playback-error").hidden = true;
         player.src = src;
       }
@@ -314,34 +326,61 @@
 
     function renderRanking() {
       const list = byId("rank-list");
-      list.replaceChildren();
       order.forEach((index, rank) => {
-        const { letter } = entries[index];
-        const row = document.createElement("li");
-        row.className = "rank-row";
-        const number = document.createElement("span");
-        number.className = "clip rank-number";
-        number.textContent = `${rank + 1}위`;
-        const label = document.createElement("div");
-        label.className = "rank-label";
-        label.textContent = `영상 ${letter}`;
-        const stars = document.createElement("small");
-        stars.textContent = `★ ${reviews[index].score}/5`;
-        label.append(stars);
-        const position = document.createElement("select");
-        position.setAttribute("aria-label", `영상 ${letter} 순위`);
-        order.forEach((_, i) => position.add(new Option(`${i + 1}위`, i)));
-        position.value = String(rank);
-        position.addEventListener("change", () => {
-          order.splice(rank, 1);
-          order.splice(Number(position.value), 0, index);
-          renderRanking();
-          list.querySelector(`[aria-label="영상 ${letter} 순위"]`).focus();
-          persist();
-        });
-        row.append(number, label, position);
-        list.append(row);
+        if (!rankRows.has(index)) rankRows.set(index, createRankRow(index));
+        const item = rankRows.get(index);
+        item.number.textContent = `${rank + 1}위`;
+        item.stars.textContent = `★ ${reviews[index].score}/5`;
+        item.position.value = String(rank);
+        const before = list.children[rank] || null;
+        if (before !== item.row) {
+          if (item.row.parentNode === list && typeof list.moveBefore === "function") list.moveBefore(item.row, before);
+          else list.insertBefore(item.row, before);
+        }
       });
+    }
+
+    function createRankRow(index) {
+      const { letter } = entries[index];
+      const row = document.createElement("li");
+      row.className = "rank-row";
+      const clip = document.createElement("video");
+      clip.className = "rank-video";
+      clip.controls = true;
+      clip.playsInline = true;
+      clip.preload = "none";
+      clip.poster = `poster/${letter}.jpg`;
+      clip.src = `video/${letter}.mp4`;
+      clip.setAttribute("aria-label", `영상 ${letter} 재생`);
+      clip.addEventListener("play", () => {
+        player.pause();
+        for (const other of rankRows.values()) if (other.clip !== clip) other.clip.pause();
+      });
+      const controls = document.createElement("div");
+      controls.className = "rank-controls";
+      const number = document.createElement("span");
+      number.className = "clip rank-number";
+      const label = document.createElement("div");
+      label.className = "rank-label";
+      label.textContent = `영상 ${letter}`;
+      const stars = document.createElement("small");
+      label.append(stars);
+      const field = document.createElement("label");
+      field.textContent = "순위 변경";
+      const position = document.createElement("select");
+      position.setAttribute("aria-label", `영상 ${letter} 순위`);
+      indices.forEach(i => position.add(new Option(`${i + 1}위`, i)));
+      position.addEventListener("change", () => {
+        order.splice(order.indexOf(index), 1);
+        order.splice(Number(position.value), 0, index);
+        renderRanking();
+        position.focus({ preventScroll: true });
+        persist();
+      });
+      field.append(position);
+      controls.append(number, label, field);
+      row.append(clip, controls);
+      return { row, clip, number, stars, position };
     }
 
     byId("confirm-rank").addEventListener("click", () => {
